@@ -98,7 +98,7 @@ def decode_oneHot(seq):
     return dSeq
 
 
-class Optimizer:
+class optimizer_fix_blank:
 
     def __init__(self,
                  predictor_path="/home/hwxu/promoterDesigner/Predictor/results/model/165_mpra_expr_denselstm_0.76.pth",
@@ -109,7 +109,9 @@ class Optimizer:
                  seqL=165,
                  gen_num=3,
                  similarity_penalty=0.9,
-                 save_path='results/optimize_results_denselstm_0.76.txt'):
+                 size_pop=5*1024,
+                 max_iter=100,
+                 prob_mut=0.005):
         self.generator = torch.load(generator_path)
         self.predictor = torch.load(predictor_path)
         self.epochs = epochs
@@ -117,14 +119,16 @@ class Optimizer:
         self.is_gpu = is_gpu
         self.seqL = seqL
         self.gen_num = gen_num
-        self.save_path = save_path
         self.similarity_penalty = similarity_penalty
+        self.size_pop = size_pop
+        self.max_iter = max_iter
+        self.prob_mut = prob_mut
         for p in self.generator.parameters():
             p.requires_grad = False
         for p in self.predictor.parameters():
             p.requires_grad = False
         self.seqs, self.masks, self.randns = [], [], []
-        self.best_expr, self.best_seq = 0, ''
+        self.best_expr, self.best_seq = -10**10, ''
         self.seq_results, self.expr_results, self.control_results = collections.OrderedDict(), collections.OrderedDict(), collections.OrderedDict()
 
     def set_input(self, polish_seqs, control_seqs):
@@ -146,7 +150,7 @@ class Optimizer:
             self.i = 0
 
     def opt_func(self, p):
-        lb_output = -1000
+        lb_output = -10**10
         p_reshape = np.zeros([np.size(p, 0), 4, self.seqL])
         mask_i = self.masks[self.i]
         for i in range(np.size(p, 0)):
@@ -202,11 +206,10 @@ class Optimizer:
             return -predictions
 
     def optimization(self):
-        keys = ['A', 'T', 'C', 'G']
         mode = 'vectorization'
         set_run_mode(self.opt_func, mode)
         for i in range(len(self.seqs)):
-            self.best_expr, self.best_seq = 0, ''
+            self.best_expr, self.best_seq = -10**10, ''
             print('Optimize seq {}'.format(i))
             seq_i = self.seqs_string[i]
             self.control_results[seq_i] = self.control_seqs_string[i]
@@ -215,6 +218,134 @@ class Optimizer:
             for j in range(4*self.seqL):
                 lb.append(0)
                 ub.append(1)
-            ga = GA(func=self.opt_func, n_dim=4*self.seqL, size_pop=5*1024, max_iter=100, prob_mut=0.005, lb=lb, ub=ub,
+            ga = GA(func=self.opt_func, n_dim=4*self.seqL, size_pop=self.size_pop, max_iter=self.max_iter, prob_mut=self.prob_mut, lb=lb, ub=ub,
                     precision=1e-7)
+            ga.run()
+
+
+class optimizer_search_nbps:
+
+    def __init__(self,
+                 predictor_path="/home/hwxu/promoterDesigner/Predictor/results/model/165_mpra_expr_denselstm_0.76.pth",
+                 generator_path="/home/hwxu/promoterDesigner/Generator/cache/attn_-10_-35/ecoli_mpra_-10_-35net_G_9999.pth",
+                 epochs=5000,
+                 lr=0.01,
+                 is_gpu=True,
+                 seqL=165,
+                 gen_num=3,
+                 similarity_penalty=0.9,
+                 size_pop=5 * 1024,
+                 max_iter=100,
+                 prob_mut=0.005,
+                 polishE=5):
+        self.generator = torch.load(generator_path)
+        self.predictor = torch.load(predictor_path)
+        for p in self.generator.parameters():
+            p.requires_grad = False
+        for p in self.predictor.parameters():
+            p.requires_grad = False
+        self.epochs = epochs
+        self.lr = lr
+        self.is_gpu = is_gpu
+        self.seqL = seqL
+        self.gen_num = gen_num
+        self.similarity_penalty = similarity_penalty
+        self.size_pop = size_pop
+        self.max_iter = max_iter
+        self.prob_mut = prob_mut
+        self.polishE = polishE
+        self.lb_output = -float(1000)
+        self.seqs, self.masks, self.randns = [], [], []
+        self.best_expr, self.best_seq = 0, ''
+        self.seq_results, self.expr_results, self.control_results = collections.OrderedDict(), collections.OrderedDict(), collections.OrderedDict()
+
+    def set_input(self, polish_seqs, control_seqs):
+        self.seqs_string = polish_seqs
+        self.control_seqs_string = control_seqs
+        for i in range(len(polish_seqs)):
+            seq_i = polish_seqs[i]
+            self.seq_results[seq_i], self.expr_results[seq_i] = [], []
+            for j in range(self.gen_num):
+                self.seq_results[seq_i].append(seq_i)
+                self.expr_results[seq_i].append(self.lb_output)
+            self.seq_results[seq_i], self.expr_results[seq_i] = np.array(self.seq_results[seq_i]), np.array(self.expr_results[seq_i])
+            self.seqs.append(backbone_one_hot(polish_seqs[i]))
+            self.i = 0
+
+    def opt_func(self, p):
+        lb_output = self.lb_output
+        p1, p2 = p[:, 0: self.polishE], p[:, self.polishE: ]
+        p_reshape = np.zeros([np.size(p, 0), 4, self.seqL])
+        seqs_position = np.zeros([4, self.seqL])
+        for i in range(np.size(p, 0)):
+            seqs_position[:, :] = self.seqs[self.i][:, :]
+            seqs_position[:, np.int64(p1[i, :])] = p2[i, :].reshape([4, -1])
+            p_reshape[i, :, :] = seqs_position[:, :]
+        positionData = DataLoader(LoadData(data=p_reshape), batch_size=1024, shuffle=False)
+        tensorSeq, pred_value = [], []
+        for j, eval_data in enumerate(positionData):
+            tensorSeq.append(self.generator(eval_data).detach())
+        tensorSeq = torch.cat(tensorSeq, dim=0).cpu().float().numpy()
+        for i in range(np.size(p, 0)):
+            for j in range(self.seqL):
+                maxId = np.argsort(tensorSeq[i, :, j])
+                tensorSeq[i, :, j] = 0
+                tensorSeq[i, maxId[-1], j] = 1
+        generateData = DataLoader(LoadData(data=tensorSeq), batch_size=1024, shuffle=False)
+        predictions = []
+        seq_generate = []
+        for j, eval_data in enumerate(generateData):
+            seq_generate.append(eval_data)
+            predictions.append(self.predictor(eval_data).detach())
+        seq_generate = torch.cat(seq_generate, dim=0).cpu().float().numpy()
+        predictions = torch.cat(predictions, dim=0).cpu().float().numpy()
+
+        for k in range(np.size(predictions, 0)):
+            seq_decode_k = decode_oneHot(np.squeeze(seq_generate[k, :, :]).reshape([4, -1]))
+            dif = 0
+            for m_j in range(self.seqL):
+                if self.seqs_string[self.i][m_j] != 'M' and self.seqs_string[self.i][m_j] != seq_decode_k[m_j]:
+                    dif += 1
+            if dif > self.polishE:
+                predictions[k] = lb_output
+
+        preList = np.argsort(-predictions)
+        seq_max = seq_generate[preList[0]]
+        expression_eval = predictions[preList[0]]
+
+        seq_opt = decode_oneHot(np.squeeze(seq_max))
+        if expression_eval > min(self.expr_results[self.seqs_string[self.i]]):
+            if seq_opt not in list(self.seq_results[self.seqs_string[self.i]]):
+                self.seq_results[self.seqs_string[self.i]][-1] = seq_opt
+                self.expr_results[self.seqs_string[self.i]][-1] = expression_eval
+                sort_idx = np.argsort(-self.expr_results[self.seqs_string[self.i]])
+                self.seq_results[self.seqs_string[self.i]] = self.seq_results[self.seqs_string[self.i]][sort_idx]
+                self.expr_results[self.seqs_string[self.i]] = self.expr_results[self.seqs_string[self.i]][sort_idx]
+        if expression_eval > self.best_expr:
+            self.best_expr = expression_eval
+            self.best_seq = seq_opt
+            print('best seq:{} values:{}'.format(self.best_seq, 2**expression_eval))
+        return -predictions
+
+    def optimization(self):
+        mode = 'vectorization'
+        set_run_mode(self.opt_func, mode)
+        for i in range(len(self.seqs)):
+            self.best_expr, self.best_seq = self.lb_output, ''
+            print('Optimize seq {}'.format(i))
+            seq_i = self.seqs_string[i]
+            self.control_results[seq_i] = seq_i
+            self.i = i
+            lb, ub, precision = [], [], []
+            for j in range(self.polishE + 4*self.polishE):
+                if j >= 0 and j < self.polishE:
+                    lb.append(0)
+                    ub.append(self.seqL - 1)
+                    precision.append(1)
+                else:
+                    lb.append(0)
+                    ub.append(1)
+                    precision.append(1e-7)
+            ga = GA(func=self.opt_func, n_dim=self.polishE + 4*self.polishE, size_pop=self.size_pop, max_iter=self.max_iter, prob_mut=self.prob_mut, lb=lb, ub=ub,
+                    precision=precision)
             ga.run()

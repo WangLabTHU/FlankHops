@@ -21,12 +21,12 @@ class Seq2ScalarTraining:
         self.gpu = True
         self.patience = 10
         self.epoch = 100
-        self.seqL = 100
+        self.seqL = 165
         self.mode = 'denselstm'
         self.name = 'expr_' + self.mode
         self.symb = '165_mpra'
-        self.dataset_train = DataLoader(dataset=SeqDataset(path='../data/3UTR.csv', isTrain=True, isGpu=self.gpu), batch_size=self.batch_size, shuffle=True)
-        self.dataset_test = DataLoader(dataset=SeqDataset(path='../data/3UTR.csv', isTrain=False, isGpu=self.gpu), batch_size=self.batch_size, shuffle=False)
+        self.dataset_train = DataLoader(dataset=SeqDataset(path='data/ecoli_mpra_expr.csv', isTrain=True, isGpu=self.gpu), batch_size=self.batch_size, shuffle=True)
+        self.dataset_test = DataLoader(dataset=SeqDataset(path='data/ecoli_mpra_expr.csv', isTrain=False, isGpu=self.gpu), batch_size=self.batch_size, shuffle=False)
         self.model_ratio = Seq2Scalar(input_nc=4, seqL=self.seqL, mode=self.mode)
         self.save_path = 'results/model/'
         if self.gpu:

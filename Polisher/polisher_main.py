@@ -10,50 +10,67 @@ from torch.utils.data import DataLoader
 import collections
 import pandas as pd
 from sko.GA import GA
+import pickle
+
+
+def save_obj(obj, name):
+    with open(name, 'wb') as f:
+        pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
+
+
+def load_obj(name):
+    with open(name, 'rb') as f:
+        return pickle.load(f)
 
 
 def main():
-    f = open('../experiment_9_10_2021/polisher_input.txt')
-    lines = f.readlines()
-    polish_seq, control_seq, original_seq, original_expression = [], [], [], []
-    for line in lines:
-        #if len(control_seq) == 1: break
-        if '>' not in line:
-            if 'M' in line:
-                polish_seq.append(line.strip())
-            else:
-                control_seq.append(line.strip())
-        else:
-            if 'original' in line:
-                original_seq.append(line.strip())
-            else:
-                original_expression.append(line.strip())
-    predictor_path = "/disk1/hwxu/promoterPolisher/ecoli_mpra_165_inducible/experiment_9_10_2021/165_mpra_expr_denselstm_0.76.pth"
-    generator_path = "/disk1/hwxu/promoterPolisher/ecoli_mpra_165_inducible/experiment_9_10_2021/net_G_7899_9_10_21.pth"
-    save_path = '/disk1/hwxu/promoterPolisher/ecoli_mpra_165_inducible/experiment_9_10_2021/polish_7899_inducible_mpra.txt'
-    op = polisher_module.Optimizer(predictor_path=predictor_path,
-                                generator_path=generator_path,
-                                save_path=save_path)
-    op.set_input(polish_seq, control_seq)
-    op.optimization()
+    k_fold = 3
+    train_fold_path = "../data/ecoli_mpra_nbps/ecoli_mpra_nbps_prediction_train_fold_{}.csv"
+    val_fold_path = '../data/ecoli_mpra_nbps/ecoli_mpra_nbps_prediction_val_fold_{}.csv'
+    opt_predictor_path = '../Metrics/results/model/ecoli_mpra_nbps_prediction_opt_{}.pth'
+    metric_predictor_path = '../Metrics/results/model/ecoli_mpra_nbps_prediction_metric_{}.pth'
+    generator_path = "../Generator/check_points/ecoli_mpra_nbps/net_G_7399.pth"
+    eval_number = 5
+    results_save_path = 'results/ecoli_mpra_nbps_evaluation_fold_{}.csv'
+    mode = 'search_nbps'
+    polishE = 10
 
-    with open(op.save_path, "w") as f:
-        i = 0
-        for seq in op.seqs_string:
-            f.write('{} optimize results:\n'.format(seq))
-            control_seq = op.control_results[seq]
-            seq_control_eval = transforms.ToTensor()(polisher_module.one_hot(control_seq)).float()
-            if op.is_gpu:
-                seq_control_eval = seq_control_eval.cuda()
-            expression_eval = op.predictor(seq_control_eval)
-            f.write(original_expression[i] + '\n')
-            f.write(original_seq[i] + '\n')
-            f.write('control:\n{} predict_expression:{}\n'.format(control_seq, 2 ** expression_eval.item()))
-            for j in range(op.gen_num):
-                f.write('case:\n{} optimize expression: {}\n'.format(op.seq_results[seq][j], 2 ** op.expr_results[seq][j]))
-            i += 1
-    f.close()
+    for i in range(k_fold):
+        evaluate_data_fold_i = pd.read_csv(val_fold_path.format(i))
+        idx = list(evaluate_data_fold_i.index)
+        random.shuffle(idx)
+        if mode == 'search_nbps':
+            polish_seq, control_seq = list(evaluate_data_fold_i['realA'])[0: eval_number], list(evaluate_data_fold_i['realA'])[0: eval_number]
+            op = polisher_module.optimizer_search_nbps(predictor_path=opt_predictor_path.format(i),
+                                       generator_path=generator_path,
+                                       size_pop=500,
+                                       max_iter=50,
+                                       polishE=polishE)
+        elif mode == 'fix_blank':
+            polish_seq, control_seq = list(evaluate_data_fold_i['realA_OP'])[0: eval_number], list(evaluate_data_fold_i['realB_OP'])[0: eval_number]
+            op = polisher_module.optimizer_fix_blank(predictor_path=opt_predictor_path.format(i),
+                                           generator_path=generator_path,
+                                           size_pop=500,
+                                           max_iter=50)
+        op.set_input(polish_seq, control_seq)
+        op.optimization()
+        results = collections.OrderedDict()
+        results['control'], results['case'] = [], []
+        predictor = torch.load(metric_predictor_path.format(i))
 
+        with torch.no_grad():
+            for seq in polish_seq:
+                control_seq = op.control_results[seq]
+                control_seq = transforms.ToTensor()(polisher_module.one_hot(control_seq)).float().cuda()
+                case_seq = op.seq_results[seq][0]
+                case_seq = transforms.ToTensor()(polisher_module.one_hot(case_seq)).float().cuda()
+
+                control_exp = predictor(control_seq)
+                case_exp = predictor(case_seq)
+                results['control'].append(control_exp.cpu().float().numpy()[0])
+                results['case'].append(case_exp.cpu().float().numpy()[0])
+            results = pd.DataFrame(results)
+            results.to_csv(results_save_path.format(i))
 
 
 if __name__ == '__main__':

@@ -20,7 +20,7 @@ class Dataset(object):
 
 class SeqDataset(Dataset):
 
-    def __init__(self, path='/disk1/hcwang/polisher/xhw_generator/data/3UTR.csv', isTrain=True, isGpu=True):
+    def __init__(self, path='../../deepinfomax/data/ecoli_expr_wy.xlsx', isTrain=True, isGpu=True):
         self.path = path
         files = pd.read_csv(self.path)
         seqs = list(files['realB'])
